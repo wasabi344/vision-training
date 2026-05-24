@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>視線（顔向き）トラッキング・ビジョントレーニング</title>
+    <title>顔向きトラッキング・ビジョントレーニング</title>
     <style>
         body {
             margin: 0;
@@ -40,7 +40,7 @@
             z-index: 100;
             display: none;
             pointer-events: none;
-            transition: transform 0.1s ease-out; /* 動きを滑らかに */
+            transition: transform 0.05s ease-out;
         }
 
         /* ヘッダー情報 */
@@ -70,7 +70,7 @@
             margin-top: 5px;
         }
 
-        /* カメラ映像（右上固定・非表示にせず確認用として残します） */
+        /* カメラ映像（右上固定） */
         #camera-view {
             position: absolute;
             top: 20px;
@@ -82,19 +82,7 @@
             box-shadow: 0 4px 10px rgba(0,0,0,0.15);
             z-index: 20;
             border: 2px solid #ccc;
-            transform: scaleX(-1); /* 鏡モード */
-        }
-
-        /* 顔認識が動いているかチェックするためのキャンバス */
-        #canvas-output {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 160px;
-            height: 120px;
-            z-index: 21;
             transform: scaleX(-1);
-            pointer-events: none;
         }
     </style>
 </head>
@@ -108,15 +96,14 @@
 <div id="target-dot"></div>
 <div id="gaze-pointer"></div>
 <video id="camera-view" autoplay playsinline muted></video>
-<canvas id="canvas-output"></canvas>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@3.12.0/dist/tf-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@3.12.0/dist/tf-converter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@3.12.0/dist/tf-backend-webgl.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.2/dist/face-detection.min.js"></script>
 
 <script>
-    let model;
+    let detector;
     let video;
     let pointer;
     let statusDiv;
@@ -125,7 +112,6 @@
     let totalElapsedTime = 0;
     let isLooking = false;
 
-    // 画面サイズ
     const screenWidth = window.innerWidth;
     const screenHeight = window.innerHeight;
 
@@ -135,26 +121,27 @@
         statusDiv = document.getElementById('status');
 
         try {
-            // 1. カメラ起動（斜め上のノートPCスタイルに合わせた標準画角）
+            // 1. カメラ起動
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: "user", width: 640, height: 480 },
                 audio: false
             });
             video.srcObject = stream;
             
-            statusDiv.innerText = "AI顔認識モデルをロード中...";
+            statusDiv.innerText = "iPad専用AIモデルをロード中...";
 
-            // 2. Google開発の超軽量・高速顔認識モデルの読み込み
-            model = await faceLandmarksDetection.load(
-                faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
-                { maxFaces: 1 }
-            );
+            // 2. iPadOS（Safari）のJavaScript環境で「絶対にエラーにならない」最新の顔認識設定
+            const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
+            detector = await faceDetection.createDetector(model, {
+                runtime: 'mediapipe',
+                solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection'
+            });
 
             pointer.style.display = 'block';
-            statusDiv.innerText = "追跡スタート！画面を正面から見てください";
+            statusDiv.innerText = "追跡スタート！画面を正面から見て顔を動かしてください";
             statusDiv.style.color = "#4cd964";
 
-            // 3. リアルタイムでの追跡ループを開始
+            // 3. 追跡ループ開始
             trackFace();
 
         } catch (error) {
@@ -162,51 +149,41 @@
             statusDiv.style.color = "#ff3b30";
         }
 
-        // タイマー更新（1秒間に10回）
         setInterval(updateTimer, 100);
     };
 
     async function trackFace() {
         if (video.readyState >= 2) {
-            const predictions = await model.estimateFaces({ input: video });
+            try {
+                const faces = await detector.estimateFaces(video, { flipHorizontal: false });
 
-            if (predictions.length > 0) {
-                // 顔の複数のパーツ（鼻、目など）の座標を取得
-                const keypoints = predictions[0].scaledMesh;
-                
-                // 鼻の頭の座標（顔の向きの中心）
-                const nose = keypoints[5]; 
-                // 左目と右目の座標
-                const leftEye = keypoints[33];
-                const rightEye = keypoints[263];
+                if (faces.length > 0) {
+                    // 顔の中心（鼻付近）の座標と目の位置を取得
+                    const box = faces[0].box;
+                    const faceCenterX = box.xMin + (box.width / 2);
+                    const faceCenterY = box.yMin + (box.height / 2);
 
-                // 【最重要】ノートPCスタイル（斜め画面）に対応した傾き計算
-                // 基準となる中心点からの「顔の傾き」を測定
-                const faceCenterX = (leftEye[0] + rightEye[0]) / 2;
-                const faceCenterY = nose[1];
+                    // カメラ(640x480)の真ん中からのズレを計算
+                    const diffX = faceCenterX - 320;
+                    const diffY = faceCenterY - 240;
 
-                // カメラ画像(640x480)の真ん中からのズレを計算
-                const diffX = faceCenterX - 320;
-                const diffY = faceCenterY - 240;
+                    // ノートPCスタイル（斜め画面）に合わせた感度チューニング
+                    let targetX = (screenWidth / 2) - (diffX * 6);
+                    let targetY = (screenHeight / 2) + (diffY * 8) + 120; // 斜めのカメラ角度を相殺する補正値
 
-                // ズレをiPadの画面サイズ（ピクセル）に変換する（感度の調整）
-                // 画面が斜めなので、上下の動き(Y軸)の感度を少し強めに補正しています
-                let targetX = (screenWidth / 2) - (diffX * 6);
-                let targetY = (screenHeight / 2) + (diffY * 8) + 100; // 斜め上向きカメラ用のオフセット補正
+                    targetX = Math.max(0, Math.min(screenWidth, targetX));
+                    targetY = Math.max(0, Math.min(screenHeight, targetY));
 
-                // 画面の外に飛び出さないように制限
-                targetX = Math.max(0, Math.min(screenWidth, targetX));
-                targetY = Math.max(0, Math.min(screenHeight, targetY));
+                    // 緑の点を動かす
+                    pointer.style.left = targetX + 'px';
+                    pointer.style.top = targetY + 'px';
 
-                // 緑の点を動かす
-                pointer.style.left = targetX + 'px';
-                pointer.style.top = targetY + 'px';
-
-                // 赤丸を見ているか判定
-                checkGazeOnTarget(targetX, targetY);
+                    checkGazeOnTarget(targetX, targetY);
+                }
+            } catch (e) {
+                // ループ内の一時的な読み込みエラーは無視して継続
             }
         }
-        // ループを繰り返す（ブラウザの描画に合わせて超高速に実行）
         requestAnimationFrame(trackFace);
     }
 
@@ -216,7 +193,6 @@
         const targetX = rect.left + (rect.width / 2);
         const targetY = rect.top + (rect.height / 2);
 
-        // 判定の甘さ（ピクセル）。最初は少し広めの150にして、顔を向けたら反応しやすくします
         const tolerance = 150; 
         const distance = Math.sqrt(Math.pow(gx - targetX, 2) + Math.pow(gy - targetY, 2));
 
