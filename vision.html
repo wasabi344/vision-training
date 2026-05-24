@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>視線トラッキング・ビジョントレーニング</title>
+    <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* 画面中央のターゲットドット */
+        #target-dot {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 40px;
+            height: 40px;
+            background-color: #ff3b30;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 15px rgba(255, 59, 48, 0.6);
+            z-index: 10;
+        }
+
+        /* ヘッダー情報（タイマーなど） */
+        #header-info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 20;
+        }
+
+        .info-text {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            margin: 0;
+        }
+
+        /* ステータス表示 */
+        #status {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        /* カメラ映像の表示位置（右上へ固定） */
+        #webgazerVideoContainer {
+            top: 20px !important;
+            left: auto !important;
+            right: 20px !important;
+            width: 240px !important;
+            height: 180px !important;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+
+<div id="header-info">
+    <p class="info-text">注視時間: <span id="timer">0.0</span> 秒</p>
+    <div id="status">カメラの準備中...（許可を出してください）</div>
+</div>
+
+<div id="target-dot"></div>
+
+<script>
+    let lookStartTime = null;
+    let totalElapsedTime = 0;
+    let isLooking = false;
+
+    window.onload = async () => {
+        const statusDiv = document.getElementById('status');
+
+        // 1. WebGazerの初期設定と開始
+        webgazer.setGazeListener((data, elapsedTime) => {
+            if (data == null) {
+                isLooking = false;
+                return;
+            }
+
+            // 見ている位置の座標 (X, Y)
+            const gazeX = data.x;
+            const gazeY = data.y;
+
+            // 中央ドットの判定
+            checkGazeOnTarget(gazeX, gazeY);
+        });
+
+        // カメラ起動・トラッキング開始
+        await webgazer.begin();
+        
+        // 画面上に視線を示す「赤いドット（予測位置）」を表示する設定
+        webgazer.showPredictionPoints(true); 
+        
+        statusDiv.innerText = "追跡中：画面のあちこちを目で見て、赤い点がついてくるか確認してください。";
+        
+        // 定期的にタイマー画面を更新（1秒間に10回）
+        setInterval(updateTimer, 100);
+    };
+
+    // 視線が中央のターゲットに入っているか計算する関数
+    function checkGazeOnTarget(gx, gy) {
+        const target = document.getElementById('target-dot');
+        const rect = target.getBoundingClientRect();
+        
+        // ターゲットの中心座標
+        const targetX = rect.left + (rect.width / 2);
+        const targetY = rect.top + (rect.height / 2);
+
+        // 判定の「甘さ」（ピクセル単位）。生徒に合わせてここの数値を広げると判定が優しくなります
+        const tolerance = 100; 
+
+        // ターゲットとの距離を計算
+        const distance = Math.sqrt(Math.pow(gx - targetX, 2) + Math.pow(gy - targetY, 2));
+
+        if (distance <= tolerance) {
+            if (!isLooking) {
+                // 見始めた瞬間
+                lookStartTime = Date.now();
+                isLooking = true;
+            }
+        } else {
+            if (isLooking) {
+                // 視線が外れた瞬間、それまでの時間を加算
+                totalElapsedTime += (Date.now() - lookStartTime);
+                lookStartTime = null;
+                isLooking = false;
+            }
+        }
+    }
+
+    // タイマー数値を画面に反映
+    function updateTimer() {
+        let currentSessionTime = 0;
+        if (isLooking && lookStartTime) {
+            currentSessionTime = Date.now() - lookStartTime;
+        }
+        
+        // 合計秒数を計算
+        const totalSeconds = ((totalElapsedTime + currentSessionTime) / 1000).toFixed(1);
+        document.getElementById('timer').innerText = totalSeconds;
+    }
+
+    // アプリを閉じるときにカメラをきれいに終了させる
+    window.onbeforeunload = function() {
+        webgazer.end();
+    };
+</script>
+</body>
+</html>
