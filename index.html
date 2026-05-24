@@ -2,9 +2,9 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>視線トラッキング・ビジョントレーニング</title>
-    <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webgazer@2.1.0/dist/webgazer.js"></script>
     <style>
         body {
             margin: 0;
@@ -20,8 +20,8 @@
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 40px;
-            height: 40px;
+            width: 50px;
+            height: 50px;
             background-color: #ff3b30;
             border-radius: 50%;
             transform: translate(-50%, -50%);
@@ -29,43 +29,45 @@
             z-index: 10;
         }
 
-        /* ヘッダー情報（タイマーなど） */
+        /* ヘッダー情報 */
         #header-info {
             position: absolute;
             top: 20px;
             left: 20px;
-            background: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.95);
             padding: 15px 20px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             z-index: 20;
+            width: 280px;
         }
 
         .info-text {
-            font-size: 20px;
+            font-size: 24px;
             font-weight: bold;
             color: #333;
             margin: 0;
         }
 
-        /* ステータス表示 */
         #status {
-            font-size: 14px;
-            color: #666;
+            font-size: 13px;
+            color: #ff9500;
+            font-weight: bold;
             margin-top: 5px;
         }
 
-        /* カメラ映像の表示位置（右上へ固定） */
+        /* カメラ映像の表示位置（右上へ固定・見やすく少し拡大） */
         #webgazerVideoContainer {
             top: 20px !important;
             left: auto !important;
             right: 20px !important;
-            width: 240px !important;
-            height: 180px !important;
+            width: 200px !important;
+            height: 150px !important;
             border-radius: 8px;
             overflow: hidden;
             box-shadow: 0 4px 10px rgba(0,0,0,0.15);
             z-index: 20;
+            border: 2px solid #ccc;
         }
     </style>
 </head>
@@ -73,7 +75,7 @@
 
 <div id="header-info">
     <p class="info-text">注視時間: <span id="timer">0.0</span> 秒</p>
-    <div id="status">カメラの準備中...（許可を出してください）</div>
+    <div id="status">システム起動中...</div>
 </div>
 
 <div id="target-dot"></div>
@@ -86,30 +88,40 @@
     window.onload = async () => {
         const statusDiv = document.getElementById('status');
 
-        // 1. WebGazerの初期設定と開始
-        webgazer.setGazeListener((data, elapsedTime) => {
-            if (data == null) {
-                isLooking = false;
-                return;
-            }
+        try {
+            // iPadのカメラサイズ制限を回避するためのパラメータ設定
+            webgazer.params.videoViewerWidth = 200;
+            webgazer.params.videoViewerHeight = 150;
 
-            // 見ている位置の座標 (X, Y)
-            const gazeX = data.x;
-            const gazeY = data.y;
+            // 1. WebGazerの初期設定
+            await webgazer.setGazeListener((data, elapsedTime) => {
+                if (data == null) {
+                    isLooking = false;
+                    return;
+                }
 
-            // 中央ドットの判定
-            checkGazeOnTarget(gazeX, gazeY);
-        });
+                // トラッキングが動いたらステータスを更新
+                statusDiv.innerText = "追跡中：赤い点📍が視線に合わせて動きます";
+                statusDiv.style.color = "#4cd964"; // 緑色に
 
-        // カメラ起動・トラッキング開始
-        await webgazer.begin();
+                // 視線座標 (X, Y)
+                const gazeX = data.x;
+                const gazeY = data.y;
+
+                // 中央ドットの判定を実行
+                checkGazeOnTarget(gazeX, gazeY);
+            }).begin();
+
+            // 予測位置の赤い点を表示
+            webgazer.showPredictionPoints(true); 
+            statusDiv.innerText = "顔を認識中... 画面をじっと見てください";
+
+        } catch (error) {
+            statusDiv.innerText = "起動エラー: " + error.message;
+            statusDiv.style.color = "#ff3b30";
+        }
         
-        // 画面上に視線を示す「赤いドット（予測位置）」を表示する設定
-        webgazer.showPredictionPoints(true); 
-        
-        statusDiv.innerText = "追跡中：画面のあちこちを目で見て、赤い点がついてくるか確認してください。";
-        
-        // 定期的にタイマー画面を更新（1秒間に10回）
+        // タイマー更新のループ（1秒間に10回）
         setInterval(updateTimer, 100);
     };
 
@@ -122,21 +134,19 @@
         const targetX = rect.left + (rect.width / 2);
         const targetY = rect.top + (rect.height / 2);
 
-        // 判定の「甘さ」（ピクセル単位）。生徒に合わせてここの数値を広げると判定が優しくなります
-        const tolerance = 100; 
+        // iPad用に入力判定の範囲を少し広め（120マイル）に調整して優しくします
+        const tolerance = 120; 
 
         // ターゲットとの距離を計算
         const distance = Math.sqrt(Math.pow(gx - targetX, 2) + Math.pow(gy - targetY, 2));
 
         if (distance <= tolerance) {
             if (!isLooking) {
-                // 見始めた瞬間
                 lookStartTime = Date.now();
                 isLooking = true;
             }
         } else {
             if (isLooking) {
-                // 視線が外れた瞬間、それまでの時間を加算
                 totalElapsedTime += (Date.now() - lookStartTime);
                 lookStartTime = null;
                 isLooking = false;
@@ -146,17 +156,23 @@
 
     // タイマー数値を画面に反映
     function updateTimer() {
+        if (!isLooking) {
+            // 見ていない時は、文字の点滅などを防ぐために現在の確定合計時間のみ表示
+            const totalSeconds = (totalElapsedTime / 1000).toFixed(1);
+            document.getElementById('timer').innerText = totalSeconds;
+            return;
+        }
+
         let currentSessionTime = 0;
-        if (isLooking && lookStartTime) {
+        if (lookStartTime) {
             currentSessionTime = Date.now() - lookStartTime;
         }
         
-        // 合計秒数を計算
         const totalSeconds = ((totalElapsedTime + currentSessionTime) / 1000).toFixed(1);
         document.getElementById('timer').innerText = totalSeconds;
     }
 
-    // アプリを閉じるときにカメラをきれいに終了させる
+    // 終了処理
     window.onbeforeunload = function() {
         webgazer.end();
     };
