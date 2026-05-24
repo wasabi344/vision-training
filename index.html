@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>視線トラッキング・ビジョントレーニング</title>
+    <title>視線（顔向き）トラッキング・ビジョントレーニング</title>
     <style>
         body {
             margin: 0;
@@ -19,27 +19,28 @@
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 50px;
-            height: 50px;
+            width: 60px;
+            height: 60px;
             background-color: #ff3b30;
             border-radius: 50%;
             transform: translate(-50%, -50%);
-            box-shadow: 0 0 15px rgba(255, 59, 48, 0.6);
+            box-shadow: 0 0 20px rgba(255, 59, 48, 0.6);
             z-index: 10;
         }
 
         /* 視線（顔の向き）の可視化ドット */
         #gaze-pointer {
             position: absolute;
-            width: 20px;
-            height: 20px;
+            width: 30px;
+            height: 30px;
             background-color: rgba(76, 217, 100, 0.8);
             border-radius: 50%;
-            border: 2px solid white;
-            box-shadow: 0 0 8px rgba(0,0,0,0.3);
+            border: 3px solid white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
             z-index: 100;
             display: none;
             pointer-events: none;
+            transition: transform 0.1s ease-out; /* 動きを滑らかに */
         }
 
         /* ヘッダー情報 */
@@ -64,24 +65,36 @@
 
         #status {
             font-size: 13px;
-            color: #4cd964;
+            color: #007aff;
             font-weight: bold;
             margin-top: 5px;
         }
 
-        /* カメラ映像の表示位置（右上固定・完全にiPadのブロックを回避する属性付き） */
+        /* カメラ映像（右上固定・非表示にせず確認用として残します） */
         #camera-view {
             position: absolute;
             top: 20px;
             right: 20px;
-            width: 200px;
-            height: 150px;
+            width: 160px;
+            height: 120px;
             border-radius: 8px;
             overflow: hidden;
             box-shadow: 0 4px 10px rgba(0,0,0,0.15);
             z-index: 20;
             border: 2px solid #ccc;
-            transform: scaleX(-1); /* 自撮り鏡面にする */
+            transform: scaleX(-1); /* 鏡モード */
+        }
+
+        /* 顔認識が動いているかチェックするためのキャンバス */
+        #canvas-output {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            z-index: 21;
+            transform: scaleX(-1);
+            pointer-events: none;
         }
     </style>
 </head>
@@ -89,79 +102,122 @@
 
 <div id="header-info">
     <p class="info-text">注視時間: <span id="timer">0.0</span> 秒</p>
-    <div id="status">システム起動完了（追跡中）</div>
+    <div id="status">カメラ起動中...</div>
 </div>
 
 <div id="target-dot"></div>
 <div id="gaze-pointer"></div>
 <video id="camera-view" autoplay playsinline muted></video>
+<canvas id="canvas-output"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection"></script>
 
 <script>
+    let model;
+    let video;
+    let pointer;
+    let statusDiv;
+    
     let lookStartTime = null;
     let totalElapsedTime = 0;
     let isLooking = false;
-    
-    // iPadの標準機能で顔の傾きを擬似的に検出するための初期変数
-    let currentX = window.innerWidth / 2;
-    let currentY = window.innerHeight / 2;
+
+    // 画面サイズ
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
 
     window.onload = async () => {
-        const video = document.getElementById('camera-view');
-        const pointer = document.getElementById('gaze-pointer');
-        pointer.style.display = 'block';
+        video = document.getElementById('camera-view');
+        pointer = document.getElementById('gaze-pointer');
+        statusDiv = document.getElementById('status');
 
-        // iPadOSのセキュリティを最優先で突破するカメラ起動処理
         try {
+            // 1. カメラ起動（斜め上のノートPCスタイルに合わせた標準画角）
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: "user",
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                },
+                video: { facingMode: "user", width: 640, height: 480 },
                 audio: false
             });
             video.srcObject = stream;
+            
+            statusDiv.innerText = "AI顔認識モデルをロード中...";
+
+            // 2. Google開発の超軽量・高速顔認識モデルの読み込み
+            model = await faceLandmarksDetection.load(
+                faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
+                { maxFaces: 1 }
+            );
+
+            pointer.style.display = 'block';
+            statusDiv.innerText = "追跡スタート！画面を正面から見てください";
+            statusDiv.style.color = "#4cd964";
+
+            // 3. リアルタイムでの追跡ループを開始
+            trackFace();
+
         } catch (error) {
-            document.getElementById('status').innerText = "カメラ起動エラー: " + error.message;
-            document.getElementById('status').style.color = "#ff3b30";
-            return;
+            statusDiv.innerText = "起動エラー: " + error.message;
+            statusDiv.style.color = "#ff3b30";
         }
 
-        // iPadでもフリーズしない軽量の疑似トラッキング（初期は中央からスタート）
-        // 画面を一度タップするか、顔を少し動かすと緑のポインタが反応します
-        document.addEventListener('mousemove', (e) => {
-            movePointer(e.clientX, e.clientY);
-        });
-        
-        document.addEventListener('touchmove', (e) => {
-            const touch = e.touches[0];
-            movePointer(touch.clientX, touch.clientY);
-        });
-
-        // 定期的に判定とタイマーを回すループ
+        // タイマー更新（1秒間に10回）
         setInterval(updateTimer, 100);
     };
 
-    function movePointer(x, y) {
-        const pointer = document.getElementById('gaze-pointer');
-        currentX = x;
-        currentY = y;
-        pointer.style.left = (x - 10) + 'px';
-        pointer.style.top = (y - 10) + 'px';
-        
-        // ターゲット（赤い円）に入っているか判定
-        checkGazeOnTarget(x, y);
+    async function trackFace() {
+        if (video.readyState >= 2) {
+            const predictions = await model.estimateFaces({ input: video });
+
+            if (predictions.length > 0) {
+                // 顔の複数のパーツ（鼻、目など）の座標を取得
+                const keypoints = predictions[0].scaledMesh;
+                
+                // 鼻の頭の座標（顔の向きの中心）
+                const nose = keypoints[5]; 
+                // 左目と右目の座標
+                const leftEye = keypoints[33];
+                const rightEye = keypoints[263];
+
+                // 【最重要】ノートPCスタイル（斜め画面）に対応した傾き計算
+                // 基準となる中心点からの「顔の傾き」を測定
+                const faceCenterX = (leftEye[0] + rightEye[0]) / 2;
+                const faceCenterY = nose[1];
+
+                // カメラ画像(640x480)の真ん中からのズレを計算
+                const diffX = faceCenterX - 320;
+                const diffY = faceCenterY - 240;
+
+                // ズレをiPadの画面サイズ（ピクセル）に変換する（感度の調整）
+                // 画面が斜めなので、上下の動き(Y軸)の感度を少し強めに補正しています
+                let targetX = (screenWidth / 2) - (diffX * 6);
+                let targetY = (screenHeight / 2) + (diffY * 8) + 100; // 斜め上向きカメラ用のオフセット補正
+
+                // 画面の外に飛び出さないように制限
+                targetX = Math.max(0, Math.min(screenWidth, targetX));
+                targetY = Math.max(0, Math.min(screenHeight, targetY));
+
+                // 緑の点を動かす
+                pointer.style.left = targetX + 'px';
+                pointer.style.top = targetY + 'px';
+
+                // 赤丸を見ているか判定
+                checkGazeOnTarget(targetX, targetY);
+            }
+        }
+        // ループを繰り返す（ブラウザの描画に合わせて超高速に実行）
+        requestAnimationFrame(trackFace);
     }
 
     function checkGazeOnTarget(gx, gy) {
         const target = document.getElementById('target-dot');
         const rect = target.getBoundingClientRect();
-        
         const targetX = rect.left + (rect.width / 2);
         const targetY = rect.top + (rect.height / 2);
 
-        // 判定の甘さ
-        const tolerance = 80; 
+        // 判定の甘さ（ピクセル）。最初は少し広めの150にして、顔を向けたら反応しやすくします
+        const tolerance = 150; 
         const distance = Math.sqrt(Math.pow(gx - targetX, 2) + Math.pow(gy - targetY, 2));
 
         if (distance <= tolerance) {
@@ -179,7 +235,6 @@
     }
 
     function updateTimer() {
-        // 緑の点を中央（赤丸）に重ねている間だけタイマーが進むかテスト
         if (isLooking && lookStartTime) {
             const currentSessionTime = Date.now() - lookStartTime;
             const totalSeconds = ((totalElapsedTime + currentSessionTime) / 1000).toFixed(1);
